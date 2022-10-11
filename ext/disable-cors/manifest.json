@@ -1,0 +1,16 @@
+{
+    "manifest_version": 3,
+    "name": "Disable CORS",
+    "version": "1.0",
+    "declarative_net_request": {
+        "rule_resources": [
+            {
+                "id": "disable_cors_rule",
+                "enabled": true,
+                "path": "rule.json"
+            }
+        ]
+    },
+    "permissions": ["declarativeNetRequest"],
+    "host_permissions": ["*://*/*"]
+}
