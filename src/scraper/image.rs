@@ -1,12 +1,94 @@
 use std::{
+    fmt::Display,
     fs,
-    io::{Error, Result},
+    io::{Error, Result as IoResult},
+    str::FromStr,
+    time::SystemTime,
 };
 
 use base64::decode;
+use chrono::{DateTime, Utc};
+use dataurl::DataUrl;
+use derive_getters::Getters;
+use thirtyfour::{fantoccini::error::CmdError, prelude::WebDriverError, WebDriver, WebElement};
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum ImageMimeType {
+    Jpeg,
+    Png,
+}
+
+impl Display for ImageMimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImageMimeType::Jpeg => write!(f, "image/jpeg"),
+            ImageMimeType::Png => write!(f, "image/png"),
+        }
+    }
+}
+
+impl FromStr for ImageMimeType {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "image/jpeg" => Ok(Self::Jpeg),
+            "image/png" => Ok(Self::Png),
+            _ => Err("Unsupported MIME type"),
+        }
+    }
+}
+
+#[derive(Clone, Getters)]
+pub struct ImageFilter {
+    min_width: usize,
+    min_height: usize,
+    mime_types: Vec<ImageMimeType>,
+}
+
+impl ImageFilter {
+    pub fn default() -> Self {
+        Self {
+            min_width: 300,
+            min_height: 300,
+            mime_types: Vec::new(),
+        }
+    }
+
+    pub fn set_min_width(mut self, width: usize) -> Self {
+        self.min_width = width;
+
+        self
+    }
+
+    pub fn set_min_height(mut self, height: usize) -> Self {
+        self.min_height = height;
+
+        self
+    }
+
+    pub fn add_mime_type(mut self, mime_type: ImageMimeType) -> Self {
+        if !self.mime_types.contains(&mime_type) {
+            self.mime_types.push(mime_type)
+        }
+
+        self
+    }
+
+    pub fn remove_mime_type(mut self, mime_type: ImageMimeType) -> Self {
+        match self.mime_types.iter().position(|&t| t == mime_type) {
+            Some(removed_index) => {
+                self.mime_types.remove(removed_index);
+            }
+            None => {}
+        };
+
+        self
+    }
+}
 
 pub struct ImageData {
-    pub title: String,
+    title: String,
     mime_type: String,
     encoded_content: String,
 }
@@ -20,7 +102,7 @@ impl ImageData {
         }
     }
 
-    pub fn save(&self, path: &str, name: &str) -> Result<()> {
+    pub fn save(&self, path: &str) -> IoResult<()> {
         match decode(self.encoded_content.clone()) {
             Ok(content) => {
                 let slash_index = self.mime_type.find("/").unwrap_or(0);
@@ -29,16 +111,98 @@ impl ImageData {
                     .chars()
                     .skip(slash_index + 1)
                     .collect::<String>();
+                let now: DateTime<Utc> = SystemTime::now().into();
+                let name = now.timestamp_millis();
 
-                fs::create_dir_all(path)?;
-                fs::write(format!("{}{}.{}", path, name, extension), content)?;
+                fs::create_dir_all(format!("{}/{}", path, self.title))?;
+                fs::write(
+                    format!("{}/{}/{}.{}", path, self.title, name, extension),
+                    content,
+                )?;
 
                 Ok(())
             }
             Err(_) => Err(Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Base64 decode failed!",
+                "Base64 decode failed",
             )),
         }
+    }
+}
+
+pub async fn is_valid_size(img: &WebElement, width: usize, height: usize) -> bool {
+    // Property value is only returned in the error =))
+    match img.prop("width").await.err() {
+        Some(WebDriverError::CmdError(CmdError::NotW3C(value))) => {
+            if value.as_u64().unwrap_or(0) < width as u64 {
+                return false;
+            }
+
+            match img.prop("height").await.err() {
+                Some(WebDriverError::CmdError(CmdError::NotW3C(value))) => {
+                    value.as_u64().unwrap_or(0) >= height as u64
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_valid_mime_type(accepted_types: &Vec<ImageMimeType>, media_type: &str) -> bool {
+    match ImageMimeType::from_str(media_type) {
+        Ok(mime_type) => accepted_types.contains(&mime_type),
+        Err(_) => false,
+    }
+}
+
+// Format of data url: data:[<mediatype>][;base64],<data>
+fn get_data(data_url: String, mime_types: &Vec<ImageMimeType>) -> Option<(String, String)> {
+    match DataUrl::parse(data_url.as_str()) {
+        Ok(parsed) => {
+            if is_valid_mime_type(mime_types, parsed.get_media_type()) {
+                let comma_index = data_url.find(",").unwrap_or(0);
+                // Skip comma and all characters before it
+                let data = data_url.chars().skip(comma_index + 1).collect::<String>();
+
+                Some((String::from(parsed.get_media_type()), data))
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+pub async fn read_data_url(
+    driver: &WebDriver,
+    src: &String,
+    mime_types: &Vec<ImageMimeType>,
+) -> Option<(String, String)> {
+    let result = driver
+        .execute(
+            format!(
+                "return fetch('{src}')
+                    .then(response => response.blob())
+                    .then(blob => new Promise(callback => {{
+                        let reader = new FileReader();
+                        reader.onload = function() {{
+                            callback(this.result);
+                        }};
+                        reader.readAsDataURL(blob);
+                    }}))
+                    .then(data => data);"
+            )
+            .as_str(),
+            vec![],
+        )
+        .await;
+
+    match result {
+        Ok(result) => match result.convert() {
+            Ok(data_url) => get_data(data_url, mime_types),
+            Err(_) => None,
+        },
+        Err(_) => None,
     }
 }
