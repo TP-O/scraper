@@ -1,9 +1,12 @@
 use std::{collections::HashMap, fmt::Display};
 
+use async_trait::async_trait;
 use regex::Regex;
 use thirtyfour::{prelude::WebDriverResult, By};
 use tokio::sync::mpsc::Sender;
 use url::Url;
+
+use crate::Scrape;
 
 use super::new_driver;
 
@@ -132,8 +135,11 @@ impl UrlScraper {
     fn is_valid(&self, url_str: &str) -> bool {
         self.is_matched(url_str) && !self.is_duplicate(url_str)
     }
+}
 
-    pub async fn scrape(mut self, urls: &Vec<&str>) -> WebDriverResult<()> {
+#[async_trait]
+impl Scrape for UrlScraper {
+    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()> {
         let driver = new_driver().await?;
 
         for url in urls {

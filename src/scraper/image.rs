@@ -6,15 +6,19 @@ use std::{
     time::SystemTime,
 };
 
+use async_trait::async_trait;
 use base64::decode;
 use chrono::{DateTime, Utc};
 use dataurl::DataUrl;
+use derive_getters::Getters;
 use thirtyfour::{
     fantoccini::error::CmdError,
     prelude::{WebDriverError, WebDriverResult},
     By, WebDriver, WebElement,
 };
 use tokio::sync::mpsc::Sender;
+
+use crate::Scrape;
 
 use super::new_driver;
 
@@ -45,7 +49,7 @@ impl FromStr for ImageMimeType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Getters)]
 pub struct ScrapedImage {
     title: String,
     mime_type: String,
@@ -222,8 +226,11 @@ impl ImageScraper {
             Err(_) => None,
         }
     }
+}
 
-    pub async fn scrape(&self, urls: &Vec<&str>) -> WebDriverResult<()> {
+#[async_trait]
+impl Scrape for ImageScraper {
+    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()> {
         let driver = new_driver().await?;
 
         for url in urls {

@@ -4,6 +4,7 @@ mod url;
 use std::io::{Error, ErrorKind};
 use std::process::Command;
 
+use async_trait::async_trait;
 use derive_getters::Getters;
 use thirtyfour::{prelude::WebDriverResult, DesiredCapabilities, WebDriver};
 
@@ -15,7 +16,7 @@ const DISABLE_CORS_EXTENSION: &str = "ext/disable-cors";
 
 static IS_DRIVER_STARTING: bool = false;
 
-#[derive(Getters)]
+#[derive(Getters, Clone)]
 pub struct ScrapeStrategies {
     number_of_windows: usize,
     dest_dir: String,
@@ -44,6 +45,11 @@ impl ScrapeStrategies {
 
         self
     }
+}
+
+#[async_trait]
+pub trait Scrape {
+    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()>;
 }
 
 fn start_driver() -> Result<String, Error> {
