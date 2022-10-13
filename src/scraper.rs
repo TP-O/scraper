@@ -3,16 +3,46 @@ mod image;
 use std::io::{Error, ErrorKind};
 use std::process::Command;
 
-use thirtyfour::{prelude::WebDriverResult, By, DesiredCapabilities, WebDriver};
-use tokio::sync::mpsc::Sender;
+use derive_getters::Getters;
+use thirtyfour::{prelude::WebDriverResult, DesiredCapabilities, WebDriver};
 
-use self::image::ImageData;
-pub use self::image::{ImageFilter, ImageMimeType};
+pub use self::image::*;
 
 const DRIVER_PORT: &str = "9515";
 const DISABLE_CORS_EXTENSION: &str = "ext/disable-cors";
 
 static IS_DRIVER_STARTING: bool = false;
+
+#[derive(Getters)]
+pub struct ScrapeStrategies {
+    number_of_windows: usize,
+    dest_dir: String,
+}
+
+impl Default for ScrapeStrategies {
+    fn default() -> Self {
+        Self {
+            number_of_windows: 1,
+            dest_dir: String::from("download/"),
+        }
+    }
+}
+
+impl ScrapeStrategies {
+    pub fn set_number_of_windows(mut self, windows: usize) -> Self {
+        if windows > 0 && windows != self.number_of_windows {
+            self.number_of_windows = windows;
+        }
+
+        self
+    }
+
+    pub fn set_destination(mut self, path: String) -> Self {
+        self.dest_dir = path;
+
+        self
+    }
+}
 
 fn start_driver() -> Result<String, Error> {
     if IS_DRIVER_STARTING {
@@ -42,41 +72,4 @@ async fn new_driver() -> WebDriverResult<WebDriver> {
     let driver = WebDriver::new(start_driver()?.as_str(), caps).await?;
 
     Ok(driver)
-}
-
-pub async fn scrape_images(
-    tx: &Sender<ImageData>,
-    urls: &Vec<String>,
-    filter: ImageFilter,
-) -> WebDriverResult<()> {
-    let driver = new_driver().await?;
-
-    for url in urls {
-        driver.goto(url).await?;
-
-        let title = driver.title().await?;
-        let img_tags = driver.find_all(By::Tag("img")).await?;
-
-        for img in img_tags {
-            if !image::is_valid_size(&img, *filter.min_width(), *filter.min_height()).await {
-                continue;
-            }
-
-            match img.attr("src").await? {
-                Some(src) => match image::read_data_url(&driver, &src, filter.mime_types()).await {
-                    Some((mime_type, data)) => {
-                        tx.send(ImageData::new(title.clone(), mime_type, data))
-                            .await
-                            .ok();
-                    }
-                    None => continue,
-                },
-                None => continue,
-            };
-        }
-    }
-
-    driver.close_window().await?;
-
-    Ok(())
 }

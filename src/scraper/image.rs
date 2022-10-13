@@ -9,8 +9,14 @@ use std::{
 use base64::decode;
 use chrono::{DateTime, Utc};
 use dataurl::DataUrl;
-use derive_getters::Getters;
-use thirtyfour::{fantoccini::error::CmdError, prelude::WebDriverError, WebDriver, WebElement};
+use thirtyfour::{
+    fantoccini::error::CmdError,
+    prelude::{WebDriverError, WebDriverResult},
+    By, WebDriver, WebElement,
+};
+use tokio::sync::mpsc::Sender;
+
+use super::new_driver;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ImageMimeType {
@@ -39,22 +45,24 @@ impl FromStr for ImageMimeType {
     }
 }
 
-#[derive(Clone, Getters)]
-pub struct ImageFilter {
+#[derive(Clone)]
+pub struct ScrapeImageOptions {
     min_width: usize,
     min_height: usize,
     mime_types: Vec<ImageMimeType>,
 }
 
-impl ImageFilter {
-    pub fn default() -> Self {
+impl Default for ScrapeImageOptions {
+    fn default() -> Self {
         Self {
             min_width: 300,
             min_height: 300,
-            mime_types: Vec::new(),
+            mime_types: vec![ImageMimeType::Jpeg],
         }
     }
+}
 
+impl ScrapeImageOptions {
     pub fn set_min_width(mut self, width: usize) -> Self {
         self.min_width = width;
 
@@ -87,21 +95,13 @@ impl ImageFilter {
     }
 }
 
-pub struct ImageData {
+pub struct ScrapedImage {
     title: String,
     mime_type: String,
     encoded_content: String,
 }
 
-impl ImageData {
-    pub fn new(title: String, mime_type: String, encoded_content: String) -> ImageData {
-        ImageData {
-            title,
-            mime_type,
-            encoded_content,
-        }
-    }
-
+impl ScrapedImage {
     pub fn save(&self, path: &str) -> IoResult<()> {
         match decode(self.encoded_content.clone()) {
             Ok(content) => {
@@ -130,7 +130,7 @@ impl ImageData {
     }
 }
 
-pub async fn is_valid_size(img: &WebElement, width: usize, height: usize) -> bool {
+async fn is_valid_size(img: &WebElement, width: usize, height: usize) -> bool {
     // Property value is only returned in the error =))
     match img.prop("width").await.err() {
         Some(WebDriverError::CmdError(CmdError::NotW3C(value))) => {
@@ -174,7 +174,7 @@ fn get_data(data_url: String, mime_types: &Vec<ImageMimeType>) -> Option<(String
     }
 }
 
-pub async fn read_data_url(
+async fn read_data_url(
     driver: &WebDriver,
     src: &String,
     mime_types: &Vec<ImageMimeType>,
@@ -205,4 +205,43 @@ pub async fn read_data_url(
         },
         Err(_) => None,
     }
+}
+
+pub async fn scrape_images(
+    tx: &Sender<ScrapedImage>,
+    urls: &Vec<String>,
+    opts: ScrapeImageOptions,
+) -> WebDriverResult<()> {
+    let driver = new_driver().await?;
+
+    for url in urls {
+        driver.goto(url).await?;
+
+        let title = driver.title().await?;
+        let img_tags = driver.find_all(By::Tag("img")).await?;
+
+        for img in img_tags {
+            if !is_valid_size(&img, opts.min_width, opts.min_height).await {
+                continue;
+            }
+
+            match img.attr("src").await? {
+                Some(src) => match read_data_url(&driver, &src, &opts.mime_types).await {
+                    Some((mime_type, data)) => {
+                        tx.send(ScrapedImage {
+                            title: title.clone(),
+                            mime_type,
+                            encoded_content: data,
+                        })
+                        .await
+                        .ok();
+                    }
+                    None => continue,
+                },
+                None => continue,
+            };
+        }
+    }
+
+    Ok(driver.quit().await?)
 }

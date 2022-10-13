@@ -12,8 +12,8 @@ async fn main() {
             String::from("https://blogtruyen.vn/c704542/yancha-gal-no-anjou-san-series-chap-125-anjou-san-muon-duoc-o-gan-som-hon"),
             String::from("https://blogtruyen.vn/c345998/yancha-gal-no-anjou-san-series-chuong-1"),
         ],
-        1,
-        ImageFilter::default().add_mime_type(ImageMimeType::Png),
+        ScrapeStrategies::default().set_number_of_windows(2),
+        ScrapeImageOptions::default().add_mime_type(ImageMimeType::Png),
     )
     .await
     .unwrap();
