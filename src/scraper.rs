@@ -1,4 +1,5 @@
 mod image;
+mod url;
 
 use std::io::{Error, ErrorKind};
 use std::process::Command;
@@ -7,6 +8,7 @@ use derive_getters::Getters;
 use thirtyfour::{prelude::WebDriverResult, DesiredCapabilities, WebDriver};
 
 pub use self::image::*;
+pub use self::url::*;
 
 const DRIVER_PORT: &str = "9515";
 const DISABLE_CORS_EXTENSION: &str = "ext/disable-cors";
