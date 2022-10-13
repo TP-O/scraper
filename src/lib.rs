@@ -7,7 +7,7 @@ use tokio::sync::mpsc::channel;
 pub use scraper::*;
 
 pub async fn scrape_images(
-    urls: &Vec<String>,
+    urls: &Vec<&'static str>,
     strategies: ScrapeStrategies,
     scrape_opts: ScrapeImageOptions,
 ) -> WebDriverResult<()> {
@@ -22,11 +22,8 @@ pub async fn scrape_images(
                 let sub_urls = Vec::from(&urls[start..end]);
 
                 tokio::spawn(async move {
-                    scraper::scrape_images(&tx_clone, &sub_urls, opt_clone)
-                        .await
-                        .unwrap();
-
-                    drop(tx_clone);
+                    let scraper = scraper::ImageScraper::new(tx_clone, opt_clone);
+                    scraper.scrape(&sub_urls).await.unwrap();
                 });
             }
             None => break,
