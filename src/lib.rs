@@ -1,6 +1,13 @@
 mod scraper;
 pub mod util;
 
+use std::{
+    fs::{self, File},
+    io::Write,
+    time::SystemTime,
+};
+
+use chrono::{DateTime, Utc};
 use thirtyfour::prelude::WebDriverResult;
 
 pub use scraper::*;
@@ -65,8 +72,30 @@ pub async fn scrape_urls(
 
     drop(tx);
 
+    let mut file: Option<File> = None;
+
+    if !strategies.dest_dir().is_empty() {
+        let now: DateTime<Utc> = SystemTime::now().into();
+        let name = now.timestamp_millis();
+
+        fs::create_dir_all(format!("{}", strategies.dest_dir()))?;
+        file = Some(
+            fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(format!("{}/{}.txt", strategies.dest_dir(), name))
+                .unwrap(),
+        );
+    }
+
     while let Some(data) = rx.recv().await {
-        println!("url: {}", data);
+        match file.as_mut() {
+            Some(f) => {
+                writeln!(f, "{}", data)?;
+            }
+            None => println!("Url: {}", data),
+        }
     }
 
     Ok(())
