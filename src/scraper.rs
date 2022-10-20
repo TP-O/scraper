@@ -16,6 +16,11 @@ const DISABLE_CORS_EXTENSION: &str = "ext/disable-cors";
 
 static IS_DRIVER_STARTING: bool = false;
 
+#[async_trait]
+pub trait Scrape {
+    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()>;
+}
+
 #[derive(Getters, Clone)]
 pub struct ScrapeStrategies {
     number_of_windows: usize,
@@ -45,11 +50,6 @@ impl ScrapeStrategies {
 
         self
     }
-}
-
-#[async_trait]
-pub trait Scrape {
-    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()>;
 }
 
 fn start_driver() -> Result<String, Error> {

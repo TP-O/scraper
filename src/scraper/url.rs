@@ -6,9 +6,7 @@ use thirtyfour::{prelude::WebDriverResult, By};
 use tokio::sync::mpsc::Sender;
 use url::Url;
 
-use crate::Scrape;
-
-use super::new_driver;
+use super::{new_driver, Scrape};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum UrlTag {

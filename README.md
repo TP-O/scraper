@@ -1,1 +1,1 @@
-# MangaSP
+# Scraper

@@ -18,9 +18,7 @@ use thirtyfour::{
 };
 use tokio::sync::mpsc::Sender;
 
-use crate::Scrape;
-
-use super::new_driver;
+use super::{new_driver, Scrape};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ImageMimeType {
