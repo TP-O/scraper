@@ -1,22 +1,14 @@
-use std::{
-    fmt::Display,
-    fs,
-    io::{Error, Result as IoResult},
-    str::FromStr,
-    time::SystemTime,
-};
+use std::{fmt::Display, fs, str::FromStr, time::SystemTime};
 
 use async_trait::async_trait;
 use base64::decode;
 use chrono::{DateTime, Utc};
 use dataurl::DataUrl;
 use derive_getters::Getters;
-use thirtyfour::{
-    fantoccini::error::CmdError,
-    prelude::{WebDriverError, WebDriverResult},
-    By, WebDriver, WebElement,
-};
+use thirtyfour::{fantoccini::error::CmdError, prelude::WebDriverError, By, WebDriver, WebElement};
 use tokio::sync::mpsc::Sender;
+
+use crate::error::ScrapeResult;
 
 use super::{new_driver, Scrape};
 
@@ -55,42 +47,44 @@ pub struct ScrapedImage {
 }
 
 impl ScrapedImage {
-    pub fn save(&self, path: &str) -> IoResult<()> {
-        match decode(self.encoded_content.clone()) {
-            Ok(content) => {
-                let slash_index = self.mime_type.find("/").unwrap_or(0);
-                let extension = self
-                    .mime_type
-                    .chars()
-                    .skip(slash_index + 1)
-                    .collect::<String>();
-                let now: DateTime<Utc> = SystemTime::now().into();
-                let name = now.timestamp_millis();
+    pub fn save(&self, path: &str) -> ScrapeResult<()> {
+        let content = decode(&self.encoded_content).unwrap();
+        let slash_index = self.mime_type.find("/").unwrap_or(0);
+        let extension = self
+            .mime_type
+            .chars()
+            .skip(slash_index + 1)
+            .collect::<String>();
+        let now: DateTime<Utc> = SystemTime::now().into();
+        let name = now.timestamp_millis();
 
-                fs::create_dir_all(format!("{}/{}", path, self.title))?;
-                fs::write(
-                    format!("{}/{}/{}.{}", path, self.title, name, extension),
-                    content,
-                )?;
+        fs::create_dir_all(format!("{}/{}", path, self.title))
+            .expect("Unable to create desitnation folder");
 
-                Ok(())
-            }
-            Err(_) => Err(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Base64 decode failed",
-            )),
+        if fs::write(
+            format!("{}/{}/{}.{}", path, self.title, name, extension),
+            content,
+        )
+        .is_err()
+        {
+            println!(
+                "Failed to save image: {}/{}/{}.{}",
+                path, self.title, name, extension
+            );
         }
+
+        Ok(())
     }
 }
 
 #[derive(Clone)]
-pub struct ScrapeImageOptions {
+pub struct ScrapeImageFilter {
     min_width: usize,
     min_height: usize,
     mime_types: Vec<ImageMimeType>,
 }
 
-impl Default for ScrapeImageOptions {
+impl Default for ScrapeImageFilter {
     fn default() -> Self {
         Self {
             min_width: 300,
@@ -100,20 +94,26 @@ impl Default for ScrapeImageOptions {
     }
 }
 
-impl ScrapeImageOptions {
-    pub fn set_min_width(mut self, width: usize) -> Self {
+impl ScrapeImageFilter {
+    pub fn set_min_width(&mut self, width: usize) -> &mut Self {
         self.min_width = width;
 
         self
     }
 
-    pub fn set_min_height(mut self, height: usize) -> Self {
+    pub fn set_min_height(&mut self, height: usize) -> &mut Self {
         self.min_height = height;
 
         self
     }
 
-    pub fn add_mime_type(mut self, mime_type: ImageMimeType) -> Self {
+    pub fn replace_mime_types(&mut self, mime_types: Vec<ImageMimeType>) -> &mut Self {
+        self.mime_types = mime_types;
+
+        self
+    }
+
+    pub fn add_mime_type(&mut self, mime_type: ImageMimeType) -> &mut Self {
         if !self.mime_types.contains(&mime_type) {
             self.mime_types.push(mime_type)
         }
@@ -121,7 +121,7 @@ impl ScrapeImageOptions {
         self
     }
 
-    pub fn remove_mime_type(mut self, mime_type: ImageMimeType) -> Self {
+    pub fn remove_mime_type(&mut self, mime_type: ImageMimeType) -> &mut Self {
         match self.mime_types.iter().position(|&t| t == mime_type) {
             Some(removed_index) => {
                 self.mime_types.remove(removed_index);
@@ -135,12 +135,12 @@ impl ScrapeImageOptions {
 
 pub struct ImageScraper {
     tx: Sender<ScrapedImage>,
-    options: ScrapeImageOptions,
+    filter: ScrapeImageFilter,
 }
 
 impl ImageScraper {
-    pub fn new(tx: Sender<ScrapedImage>, options: ScrapeImageOptions) -> Self {
-        Self { tx, options }
+    pub fn new(tx: Sender<ScrapedImage>, filter: ScrapeImageFilter) -> Self {
+        Self { tx, filter }
     }
 
     async fn is_valid_size(&self, img: &WebElement, width: usize, height: usize) -> bool {
@@ -194,7 +194,7 @@ impl ImageScraper {
     async fn read_data_url(
         &self,
         driver: &WebDriver,
-        src: &String,
+        src: &str,
         mime_types: &Vec<ImageMimeType>,
     ) -> Option<(String, String)> {
         let result = driver
@@ -228,45 +228,41 @@ impl ImageScraper {
 
 #[async_trait]
 impl Scrape for ImageScraper {
-    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()> {
+    async fn scrape(&mut self, urls: &Vec<String>) -> ScrapeResult<()> {
         let driver = new_driver().await?;
 
         for url in urls {
-            driver.goto(url).await?;
+            driver.goto(url).await.unwrap();
 
-            let title = driver.title().await?;
-            let img_tags = driver.find_all(By::Tag("img")).await?;
+            let title = driver.title().await.unwrap_or(url.to_string());
+            let img_tags = driver.find_all(By::Tag("img")).await.unwrap();
 
             for img in img_tags {
                 if !self
-                    .is_valid_size(&img, self.options.min_width, self.options.min_height)
+                    .is_valid_size(&img, self.filter.min_width, self.filter.min_height)
                     .await
                 {
                     continue;
                 }
 
-                match img.attr("src").await? {
-                    Some(src) => match self
-                        .read_data_url(&driver, &src, &self.options.mime_types)
+                if let Some(src) = img.attr("src").await.unwrap() {
+                    if let Some((mime_type, data)) = self
+                        .read_data_url(&driver, &src, &self.filter.mime_types)
                         .await
                     {
-                        Some((mime_type, data)) => {
-                            self.tx
-                                .send(ScrapedImage {
-                                    title: title.clone(),
-                                    mime_type,
-                                    encoded_content: data,
-                                })
-                                .await
-                                .unwrap();
-                        }
-                        None => continue,
-                    },
-                    None => continue,
-                };
+                        self.tx
+                            .send(ScrapedImage {
+                                title: title.clone(),
+                                mime_type,
+                                encoded_content: data,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                }
             }
         }
 
-        Ok(driver.quit().await?)
+        Ok(driver.quit().await.unwrap())
     }
 }

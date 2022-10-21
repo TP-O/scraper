@@ -2,9 +2,11 @@ use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use async_trait::async_trait;
 use regex::Regex;
-use thirtyfour::{prelude::WebDriverResult, By};
+use thirtyfour::By;
 use tokio::sync::mpsc::Sender;
 use url::Url;
+
+use crate::error::ScrapeResult;
 
 use super::{new_driver, Scrape};
 
@@ -48,25 +50,27 @@ impl FromStr for UrlTag {
 }
 
 impl UrlTag {
-    fn source_attr(&self) -> &str {
-        match self {
+    fn source_attr(&self) -> String {
+        let attr = match self {
             UrlTag::Img => "src",
             UrlTag::Iframe => "src",
             UrlTag::A => "href",
             UrlTag::Link => "href",
             UrlTag::Script => "src",
             UrlTag::Source => "src",
-        }
+        };
+
+        String::from(attr)
     }
 }
 
 #[derive(Clone)]
-pub struct ScrapeUrlOptions {
+pub struct ScrapeUrlFilter {
     tags: Vec<UrlTag>,
     regex: Regex,
 }
 
-impl Default for ScrapeUrlOptions {
+impl Default for ScrapeUrlFilter {
     fn default() -> Self {
         Self {
             tags: vec![UrlTag::A],
@@ -75,8 +79,14 @@ impl Default for ScrapeUrlOptions {
     }
 }
 
-impl ScrapeUrlOptions {
-    pub fn add_tag(mut self, tag: UrlTag) -> Self {
+impl ScrapeUrlFilter {
+    pub fn replace_tags(&mut self, tags: Vec<UrlTag>) -> &mut Self {
+        self.tags = tags;
+
+        self
+    }
+
+    pub fn add_tag(&mut self, tag: UrlTag) -> &mut Self {
         if !self.tags.contains(&tag) {
             self.tags.push(tag)
         }
@@ -84,7 +94,7 @@ impl ScrapeUrlOptions {
         self
     }
 
-    pub fn remove_tag(mut self, tag: UrlTag) -> Self {
+    pub fn remove_tag(&mut self, tag: UrlTag) -> &mut Self {
         match self.tags.iter().position(|&t| t == tag) {
             Some(removed_index) => {
                 self.tags.remove(removed_index);
@@ -95,8 +105,8 @@ impl ScrapeUrlOptions {
         self
     }
 
-    pub fn set_regex(mut self, rule: &str) -> Self {
-        match Regex::new(rule) {
+    pub fn set_regex(&mut self, rule: String) -> &mut Self {
+        match Regex::new(&rule) {
             Ok(regex) => self.regex = regex,
             Err(_) => {}
         }
@@ -107,15 +117,15 @@ impl ScrapeUrlOptions {
 
 pub struct UrlScraper {
     tx: Sender<String>,
-    options: ScrapeUrlOptions,
+    filter: ScrapeUrlFilter,
     url_counter: HashMap<String, usize>,
 }
 
 impl UrlScraper {
-    pub fn new(tx: Sender<String>, options: ScrapeUrlOptions) -> Self {
+    pub fn new(tx: Sender<String>, filter: ScrapeUrlFilter) -> Self {
         Self {
             tx,
-            options,
+            filter,
             url_counter: HashMap::new(),
         }
     }
@@ -123,10 +133,10 @@ impl UrlScraper {
     pub fn is_url(url: &str) -> bool {
         let regex = Regex::new(r"^(?:http(s)?://)[\w.-]+(?:\.[\w\.-]+)+(.?)*$").unwrap();
 
-        regex.is_match(url)
+        regex.is_match(&url)
     }
 
-    pub fn path_to_url(&self, url: &Url, path: &str) -> String {
+    pub fn path_to_url(&self, url: &Url, path: String) -> String {
         match path.starts_with("/") {
             true => url.join(format!("{path}").as_str()).unwrap().to_string(),
             false => format!("{}/{}", url.host_str().to_owned().unwrap(), path),
@@ -134,16 +144,17 @@ impl UrlScraper {
     }
 
     fn is_matched(&self, url_str: &str) -> bool {
-        self.options.regex.is_match(&url_str)
+        self.filter.regex.is_match(&url_str)
     }
 
     fn is_duplicate(&self, url_str: &str) -> bool {
         self.url_counter.get(url_str).is_some()
     }
 
-    fn count_scraped_url(&mut self, url_str: String) {
-        let old_counter = self.url_counter.get(&url_str).unwrap_or(&0);
-        self.url_counter.insert(url_str, old_counter + 1);
+    fn count_scraped_url(&mut self, url_str: &str) {
+        let old_counter = self.url_counter.get(url_str).unwrap_or(&0);
+        self.url_counter
+            .insert(String::from(url_str), old_counter + 1);
     }
 
     fn is_valid(&self, url_str: &str) -> bool {
@@ -153,42 +164,37 @@ impl UrlScraper {
 
 #[async_trait]
 impl Scrape for UrlScraper {
-    async fn scrape(mut self, urls: &Vec<String>) -> WebDriverResult<()> {
+    async fn scrape(&mut self, urls: &Vec<String>) -> ScrapeResult<()> {
         let driver = new_driver().await?;
 
         for url in urls {
-            driver.goto(url).await?;
+            driver.goto(url).await.unwrap();
 
-            match Url::parse(url) {
-                Ok(parsed_url) => {
-                    for tag_name in self.options.tags.clone() {
-                        let tags = driver
-                            .find_all(By::Tag(tag_name.to_string().as_str()))
-                            .await?;
+            if let Ok(parsed_url) = Url::parse(url) {
+                for tag_name in self.filter.tags.clone() {
+                    let tags = driver
+                        .find_all(By::Tag(&tag_name.to_string()))
+                        .await
+                        .unwrap();
 
-                        for tag in tags {
-                            match tag.attr(tag_name.source_attr()).await? {
-                                Some(src_value) => {
-                                    let scraped_url = if Self::is_url(&src_value) {
-                                        src_value
-                                    } else {
-                                        self.path_to_url(&parsed_url, &src_value).to_owned()
-                                    };
+                    for tag in tags {
+                        if let Some(attr_value) = tag.attr(&tag_name.source_attr()).await.unwrap() {
+                            let scraped_url = if Self::is_url(&attr_value) {
+                                attr_value
+                            } else {
+                                self.path_to_url(&parsed_url, attr_value)
+                            };
 
-                                    if self.is_valid(&scraped_url) {
-                                        self.tx.send(scraped_url.clone()).await.unwrap();
-                                        self.count_scraped_url(scraped_url);
-                                    }
-                                }
-                                None => continue,
+                            if self.is_valid(&scraped_url) {
+                                self.count_scraped_url(&scraped_url);
+                                self.tx.send(scraped_url).await.unwrap();
                             }
                         }
                     }
                 }
-                Err(_) => continue,
             }
         }
 
-        Ok(driver.quit().await?)
+        Ok(driver.quit().await.unwrap())
     }
 }

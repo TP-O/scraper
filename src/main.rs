@@ -6,6 +6,6 @@ async fn main() {
 
     match cli.run().await {
         Ok(_) => println!("Let's check your download folder!"),
-        Err(error) => println!("Error occurs: {}", error),
+        Err(err) => println!("Error occurs: {:?}", err),
     }
 }

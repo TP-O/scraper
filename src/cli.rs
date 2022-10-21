@@ -1,16 +1,15 @@
 use std::{
     fs::{self, File},
-    io::{self, BufRead, Write},
+    io::{BufRead, BufReader, Write},
     path::Path,
     time::SystemTime,
 };
 
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use thirtyfour::prelude::WebDriverResult;
 use tokio::sync::mpsc::channel;
 
-use crate::{scraper::*, util::*};
+use crate::{error::ScrapeResult, scraper::*, util::*};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -72,21 +71,21 @@ impl CommandLineInterface {
     async fn download_images(
         &self,
         urls: &Vec<String>,
-        strategies: ScrapeStrategies,
-        options: ScrapeImageOptions,
-    ) -> WebDriverResult<()> {
+        strategy: ScrapeStrategy,
+        filter: ScrapeImageFilter,
+    ) -> ScrapeResult<()> {
         let (tx, mut rx) = channel(100);
 
-        for i in 0..*strategies.number_of_windows() {
+        for i in 0..*strategy.number_of_windows() {
             // Split urls to smaller batches
-            match get_batch_range(urls.len(), *strategies.number_of_windows(), i) {
+            match get_batch_range(urls.len(), *strategy.number_of_windows(), i) {
                 Some((start, end)) => {
                     let tx_clone = tx.clone();
-                    let opt_clone = options.clone();
+                    let filter_clone = filter.clone();
                     let sub_urls = Vec::from(&urls[start..end]);
 
                     tokio::spawn(async move {
-                        let scraper = ImageScraper::new(tx_clone, opt_clone);
+                        let mut scraper = ImageScraper::new(tx_clone, filter_clone);
                         scraper.scrape(&sub_urls).await.unwrap();
                     });
                 }
@@ -97,7 +96,7 @@ impl CommandLineInterface {
         drop(tx);
 
         while let Some(data) = rx.recv().await {
-            data.save(strategies.dest_dir())?;
+            data.save(strategy.dest_dir()).unwrap();
         }
 
         Ok(())
@@ -106,21 +105,21 @@ impl CommandLineInterface {
     async fn scrape_urls(
         &self,
         urls: &Vec<String>,
-        strategies: ScrapeStrategies,
-        options: ScrapeUrlOptions,
-    ) -> WebDriverResult<()> {
+        strategy: ScrapeStrategy,
+        filter: ScrapeUrlFilter,
+    ) -> ScrapeResult<()> {
         let (tx, mut rx) = channel(100);
 
-        for i in 0..*strategies.number_of_windows() {
+        for i in 0..*strategy.number_of_windows() {
             // Split urls to smaller batches
-            match get_batch_range(urls.len(), *strategies.number_of_windows(), i) {
+            match get_batch_range(urls.len(), *strategy.number_of_windows(), i) {
                 Some((start, end)) => {
                     let tx_clone = tx.clone();
-                    let opt_clone = options.clone();
+                    let filter_clone = filter.clone();
                     let sub_urls = Vec::from(&urls[start..end]);
 
                     tokio::spawn(async move {
-                        let scraper = UrlScraper::new(tx_clone, opt_clone);
+                        let mut scraper = UrlScraper::new(tx_clone, filter_clone);
                         scraper.scrape(&sub_urls).await.unwrap();
                     });
                 }
@@ -131,18 +130,17 @@ impl CommandLineInterface {
         drop(tx);
 
         let mut file: Option<File> = None;
+        let now: DateTime<Utc> = SystemTime::now().into();
+        let name = now.timestamp_millis();
 
-        if !strategies.dest_dir().is_empty() {
-            let now: DateTime<Utc> = SystemTime::now().into();
-            let name = now.timestamp_millis();
-
-            fs::create_dir_all(format!("{}", strategies.dest_dir()))?;
+        if !strategy.dest_dir().is_empty() {
+            fs::create_dir_all(format!("{}", strategy.dest_dir())).unwrap();
             file = Some(
                 fs::OpenOptions::new()
                     .create(true)
                     .write(true)
                     .append(true)
-                    .open(format!("{}/{}.txt", strategies.dest_dir(), name))
+                    .open(format!("{}/{}.txt", strategy.dest_dir(), name))
                     .unwrap(),
             );
         }
@@ -150,7 +148,13 @@ impl CommandLineInterface {
         while let Some(data) = rx.recv().await {
             match file.as_mut() {
                 Some(f) => {
-                    writeln!(f, "{}", data)?;
+                    if writeln!(f, "{}", data).is_err() {
+                        println!(
+                            "Failed to  write url in file: {}/{}.txt",
+                            strategy.dest_dir(),
+                            name,
+                        );
+                    }
                 }
                 None => println!("Url: {}", data),
             }
@@ -159,85 +163,83 @@ impl CommandLineInterface {
         Ok(())
     }
 
-    pub async fn run(&self) -> WebDriverResult<()> {
-        let args = Args::parse();
-        let mut urls = Vec::from(args.urls);
-        let mut strategy = ScrapeStrategies::default();
+    fn read_urls_from_paths(&self, urls: &mut Vec<String>, paths: &Vec<String>) {
+        for p in paths {
+            let path = Path::new(&p);
 
-        if Vec::len(&args.paths) > 0 {
-            for p in args.paths {
-                let path = Path::new(&p);
+            if path.is_file() {
+                let f = File::open(path.to_str().unwrap())
+                    .expect(&format!("Unable to open file: {}", p));
+                let reader = BufReader::new(f).lines();
 
-                if path.is_file() {
-                    let f = File::open(path.to_str().unwrap())?;
-                    let reader = io::BufReader::new(f).lines();
-
-                    for line in reader {
-                        if let Ok(line) = line {
-                            urls.push(line);
-                        }
+                for line in reader {
+                    if let Ok(line) = line {
+                        urls.push(line);
                     }
-                } else if path.is_dir() {
-                    for entry in path.read_dir().unwrap() {
-                        if let Ok(entry) = entry {
-                            let f = File::open(entry.path().to_str().unwrap())?;
-                            let reader = io::BufReader::new(f).lines();
+                }
+            } else if path.is_dir() {
+                for entry in path.read_dir().unwrap() {
+                    if let Ok(entry) = entry {
+                        let f = File::open(entry.path().to_str().unwrap()).expect(&format!(
+                            "Unable to open file: {}",
+                            entry.file_name().to_str().unwrap_or("unknown :D")
+                        ));
+                        let reader = BufReader::new(f).lines();
 
-                            for line in reader {
-                                if let Ok(line) = line {
-                                    urls.push(line);
-                                }
+                        for line in reader {
+                            if let Ok(line) = line {
+                                urls.push(line);
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    pub async fn run(&self) -> ScrapeResult<()> {
+        let args = Args::parse();
+        let mut urls = Vec::from(args.urls);
+        let mut strategy = ScrapeStrategy::default();
+
+        self.read_urls_from_paths(&mut urls, &args.paths);
 
         if args.worker.is_some() {
-            strategy = strategy.set_number_of_windows(args.worker.unwrap());
+            strategy.set_number_of_windows(args.worker.unwrap());
         }
 
         if args.output.is_some() {
-            strategy = strategy.set_destination(args.output.unwrap());
+            strategy.set_destination(args.output.unwrap());
         }
 
         if args.url_scrape {
-            let mut option = ScrapeUrlOptions::default();
+            let mut filter = ScrapeUrlFilter::default();
 
             if Vec::len(&args.url_tags) > 0 {
-                option = option.remove_tag(UrlTag::A);
-
-                for tag in args.url_tags {
-                    option = option.add_tag(tag);
-                }
+                filter.replace_tags(args.url_tags);
             }
 
             if args.url_regex.is_some() {
-                option = option.set_regex(&args.url_regex.unwrap());
+                filter.set_regex(args.url_regex.unwrap());
             }
 
-            self.scrape_urls(&urls, strategy, option).await?;
+            self.scrape_urls(&urls, strategy, filter).await?;
         } else if args.image_download {
-            let mut option = ScrapeImageOptions::default();
+            let mut filter = ScrapeImageFilter::default();
 
             if Vec::len(&args.image_types) > 0 {
-                option = option.remove_mime_type(ImageMimeType::Jpeg);
-
-                for mime_type in args.image_types {
-                    option = option.add_mime_type(mime_type);
-                }
+                filter.replace_mime_types(args.image_types);
             }
 
             if args.image_width.is_some() {
-                option = option.set_min_width(args.image_width.unwrap());
+                filter.set_min_width(args.image_width.unwrap());
             }
 
             if args.image_height.is_some() {
-                option = option.set_min_height(args.image_height.unwrap());
+                filter.set_min_height(args.image_height.unwrap());
             }
 
-            self.download_images(&urls, strategy, option).await?;
+            self.download_images(&urls, strategy, filter).await?;
         }
 
         Ok(())
