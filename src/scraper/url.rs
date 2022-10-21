@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -8,7 +8,7 @@ use url::Url;
 
 use super::{new_driver, Scrape};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum UrlTag {
     Img,
     Iframe,
@@ -27,6 +27,22 @@ impl Display for UrlTag {
             UrlTag::Link => write!(f, "link"),
             UrlTag::Script => write!(f, "script"),
             UrlTag::Source => write!(f, "source"),
+        }
+    }
+}
+
+impl FromStr for UrlTag {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "img" => Ok(Self::Img),
+            "iframe" => Ok(Self::Iframe),
+            "a" => Ok(Self::A),
+            "link" => Ok(Self::Link),
+            "script" => Ok(Self::Script),
+            "source" => Ok(Self::Source),
+            _ => Err("Unsupported URL tag"),
         }
     }
 }

@@ -16,3 +16,4 @@ derive-getters = "0.2.0"
 regex = "1.6.0"
 url = "2.3.1"
 async-trait = "0.1.57"
+clap = { version = "4.0.17", features = ["derive"] }

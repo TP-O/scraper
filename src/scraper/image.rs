@@ -20,7 +20,7 @@ use tokio::sync::mpsc::Sender;
 
 use super::{new_driver, Scrape};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ImageMimeType {
     Jpeg,
     Png,
