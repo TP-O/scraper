@@ -63,6 +63,10 @@ fn start_driver() -> ScrapeResult<String> {
 
     if cfg!(target_os = "linux") {
         cmd = Command::new("driver/linux-chromedriver");
+    } else if cfg!(target_os = "windows") {
+        cmd = Command::new("driver/win32-chromedriver");
+    } else if cfg!(target_os = "macos") {
+        cmd = Command::new("driver/mac_arm64-chromedriver");
     } else {
         return Err(ScrapeError::IncompatibleError(String::from(
             "This feature is not yet available in your operating system",
